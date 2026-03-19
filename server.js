@@ -448,15 +448,13 @@ app.get('/api/browse', async (req, res) => {
     if (!target && process.platform === 'win32') {
       const { execSync } = await import('child_process');
       try {
-        // Try PowerShell Get-PSDrive first (modern Windows)
+        // Use PowerShell Get-PSDrive (modern Windows)
         const raw = execSync('powershell -Command "Get-PSDrive -PSProvider FileSystem | Select-Object -ExpandProperty Root"', { encoding: 'utf8' });
         const drives = raw.split('\n').map(l => l.trim()).filter(l => /^[A-Z]:\\?$/.test(l));
         return res.json({ path: '', parent: '', dirs: drives.map(d => ({ name: d.replace(/\\$/, ''), path: d })) });
-      } catch {
-        // Fallback to wmic for older Windows versions
-        const raw = execSync('wmic logicaldisk get name', { encoding: 'utf8' });
-        const drives = raw.split('\n').map(l => l.trim()).filter(l => /^[A-Z]:$/.test(l));
-        return res.json({ path: '', parent: '', dirs: drives.map(d => ({ name: d, path: d + '\\' })) });
+      } catch (e) {
+        // If PowerShell fails, fallback to home directory
+        console.warn('[browse] Failed to get drive letters:', e.message);
       }
     }
     if (!target) target = os.homedir();
