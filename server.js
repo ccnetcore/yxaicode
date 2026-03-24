@@ -62,6 +62,7 @@ const API_BASE_URL = 'https://yxai.chat';
 // --- Session & Permission State ---
 const activeSessions = new Map();
 const pendingApprovals = new Map();
+const planModeStates = new Map(); // sessionId -> { enabled: boolean, pendingPlan: boolean }
 
 // --- Helpers ---
 function uid() {
@@ -146,6 +147,32 @@ async function runQuery(prompt, options, ws) {
 
   // Permission callback
   sdkOpts.canUseTool = async (toolName, input, context) => {
+    // 检查是否处于计划模式
+    const planState = sessionId ? planModeStates.get(sessionId) : null;
+    const isPlanMode = planState?.enabled;
+
+    // 计划模式下，即使是 bypassPermissions 也需要确认
+    if (isPlanMode) {
+      const requestId = uid();
+      wsSend(ws, {
+        type: 'plan-execution-request',
+        requestId,
+        toolName,
+        input,
+        sessionId,
+      });
+      const decision = await waitForApproval(requestId, context?.signal);
+      if (!decision || decision.cancelled) {
+        wsSend(ws, { type: 'permission-cancelled', requestId, sessionId });
+        return { behavior: 'deny', message: '计划执行已取消' };
+      }
+      if (decision.confirmed) {
+        return { behavior: 'allow', updatedInput: decision.updatedInput ?? input };
+      }
+      return { behavior: 'deny', message: decision.message ?? '用户拒绝执行计划' };
+    }
+
+    // 非计划模式，走正常权限流程
     if (sdkOpts.permissionMode === 'bypassPermissions') {
       return { behavior: 'allow', updatedInput: input };
     }
@@ -748,6 +775,30 @@ wss.on('connection', (ws) => {
           wsSend(ws, { type: 'session-aborted', sessionId: msg.sessionId });
         }
         break;
+
+      // 计划模式切换
+      case 'plan-mode-toggle': {
+        const sid = msg.sessionId;
+        if (!sid) break;
+        const currentState = planModeStates.get(sid) || { enabled: false, pendingPlan: false };
+        currentState.enabled = msg.enabled;
+        planModeStates.set(sid, currentState);
+        console.log(`[plan-mode] 会话 ${sid} 计划模式 ${msg.enabled ? '开启' : '关闭'}`);
+        wsSend(ws, { type: 'plan-mode-updated', sessionId: sid, enabled: msg.enabled });
+        break;
+      }
+
+      // 执行计划确认
+      case 'plan-execute': {
+        const sid = msg.sessionId;
+        if (!sid) break;
+        const planState = planModeStates.get(sid);
+        if (planState && planState.pendingApproval) {
+          planState.pendingApproval({ confirmed: msg.confirmed, cancelled: msg.cancelled });
+          planState.pendingApproval = null;
+        }
+        break;
+      }
     }
   });
 

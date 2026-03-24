@@ -110,6 +110,7 @@ let modelsData = []; // All available models
 let customModels = []; // User-added custom models
 let rememberedPermissions = new Set(); // Remembered permission rules
 let cwdHistory = []; // Working directory history (max 10)
+let planModeEnabled = false; // 计划模式状态
 // 图片粘贴相关
 let pendingImages = []; // 待发送的图片 [{data, mediaType, name}]
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
@@ -873,6 +874,8 @@ function handleMsg(msg) {
     case 'session-aborted': finishStreaming(); setStreaming(false); appendSystemMsg('会话已停止'); break;
     case 'permission-request': showPermission(msg); break;
     case 'permission-cancelled': permBanner.classList.add('hidden'); break;
+    case 'plan-execution-request': showPlanExecutionConfirm(msg); break;
+    case 'plan-mode-updated': planModeEnabled = msg.enabled; break;
   }
 }
 
@@ -1364,6 +1367,37 @@ function getPermRule(toolName, input) {
 
 function escAttr(s) { return (s||'').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
+// ========== 计划模式执行确认 ==========
+function showPlanExecutionConfirm(msg) {
+  const inputStr = typeof msg.input==='string' ? msg.input
+    : msg.input?.command || msg.input?.file_path || JSON.stringify(msg.input,null,2);
+
+  permBanner.innerHTML = `
+    <div class="perm-title">📋 计划模式 - 执行确认</div>
+    <div class="perm-tool">当前处于计划模式，需要确认后正式执行计划</div>
+    <div class="perm-tool">工具: <code>${escHtml(msg.toolName)}</code></div>
+    <details><summary style="font-size:12px;color:var(--text-secondary);cursor:pointer;margin:4px 0">查看详情</summary>
+      <div class="perm-input-detail">${escHtml(inputStr)}</div>
+    </details>
+    <div class="perm-btns">
+      <button class="btn-allow" data-rid="${msg.requestId}">确认执行</button>
+      <button class="btn-deny" data-rid="${msg.requestId}">取消</button>
+    </div>`;
+  permBanner.classList.remove('hidden');
+  permBanner.querySelectorAll('.perm-btns button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const rid = btn.dataset.rid;
+      if(btn.classList.contains('btn-allow')) {
+        wsSend({ type:'permission-response', requestId:rid, confirmed:true });
+      } else {
+        wsSend({ type:'permission-response', requestId:rid, cancelled:true });
+      }
+      permBanner.classList.add('hidden');
+    });
+  });
+  scrollBottom();
+}
+
 // ========== Streaming helpers ==========
 let typeQueue = []; // queue of text chunks to simulate typing
 let typeTimer = null;
@@ -1597,6 +1631,16 @@ function hideLoading() {
 sendBtn.addEventListener('click', send);
 abortBtn.addEventListener('click', abort);
 newBtn.addEventListener('click', newSession);
+
+// 权限模式切换监听
+permSelect.addEventListener('change', () => {
+  const mode = permSelect.value;
+  if (mode === 'plan' && sessionId) {
+    wsSend({ type: 'plan-mode-toggle', sessionId, enabled: true });
+  } else if (sessionId) {
+    wsSend({ type: 'plan-mode-toggle', sessionId, enabled: false });
+  }
+});
 
 // Drag-and-drop file path / image into chat input
 promptInput.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
