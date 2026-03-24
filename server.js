@@ -16,6 +16,9 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { promises as fs } from 'fs';
 import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -368,6 +371,7 @@ function parseSessionInfo(raw) {
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+app.use('/prompt', express.static(path.join(__dirname, 'prompt')));
 
 // API: version
 const pkgJson = JSON.parse(await fs.readFile(path.join(__dirname, 'package.json'), 'utf8'));
@@ -544,6 +548,17 @@ app.get('/api/projects/:name/sessions', async (req, res) => {
       }
       sessions.sort((a, b) => new Date(b.mtime) - new Date(a.mtime));
     res.json(sessions);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// API: 删除会话到回收站 (Windows)
+app.delete('/api/projects/:name/sessions/:id', async (req, res) => {
+  try {
+    const fp = path.join(os.homedir(), '.claude', 'projects', req.params.name, req.params.id + '.jsonl');
+    await fs.access(fp);
+    const cmd = `powershell.exe -Command "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('${fp.replace(/'/g, "''")}', 'OnlyErrorDialogs', 'SendToRecycleBin')"`;
+    await execAsync(cmd);
+    res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

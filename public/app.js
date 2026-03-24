@@ -42,6 +42,12 @@ const modelSelectDisplay=$('#modelSelectDisplay'), modelSelectDropdown=$('#model
   sidebarSearch=$('#sidebarSearch'),
   cmdDropdown=$('#cmdDropdown');
 
+// 加载提示文本
+let tips = [];
+fetch('/prompt/LOADING_TIPS.md').then(r=>r.text()).then(t=>{
+  tips = t.split('\n').filter(l=>l.trim());
+}).catch(()=>{});
+
 // --- Theme Switching ---
 const themeToggleBtn = document.getElementById('themeToggleBtn');
 const themeIconSun = document.getElementById('themeIconSun');
@@ -248,6 +254,7 @@ const SLASH_COMMANDS = [
   { cmd: '/model', label: '/model', desc: '显示当前模型信息', icon: '🤖', handler: () => { showModelInfo(); hideDropdown(); } },
   { cmd: '/init', label: '/init', desc: '分析项目并生成 CLAUDE.md', icon: '📋', handler: () => { runInit(); hideDropdown(); } },
   { cmd: '/commit', label: '/commit', desc: 'Git 提交助手', icon: '📝', handler: () => { runCommit(); hideDropdown(); } },
+  { cmd: '/girlfriend', label: '/girlfriend', desc: '切换女友模式开关显示', icon: '💕', handler: () => { toggleGirlfriendSwitch(); hideDropdown(); } },
 ];
 
 function showHelp() {
@@ -262,6 +269,14 @@ function showModelInfo() {
   }
   const info = `${selectedModel.label}${selectedModel.provider ? ' (' + selectedModel.provider + ')' : ''}`;
   appendSystemMsg('当前模型: ' + info);
+}
+
+function toggleGirlfriendSwitch() {
+  const switchWrapper = document.querySelector('.switch-wrapper');
+  if (!switchWrapper) return;
+  const isHidden = switchWrapper.style.display === 'none';
+  switchWrapper.style.display = isHidden ? '' : 'none';
+  appendSystemMsg(isHidden ? '已显示女友模式开关' : '已隐藏女友模式开关');
 }
 
 function runInit() {
@@ -1593,7 +1608,8 @@ function showLoading() {
   const el = document.createElement('div');
   el.className = 'loading-indicator';
   el.id = 'loadingIndicator';
-  el.innerHTML = '<div class="loading-dots"><span></span><span></span><span></span></div><span class="loading-text">Claude 正在思考...<span class="loading-timer" style="display:none">0s</span></span>';
+  const tip = tips.length ? tips[Math.floor(Math.random()*tips.length)] : '';
+  el.innerHTML = '<div class="loading-dots"><span></span><span></span><span></span></div><span class="loading-text">Claude 正在思考...<span class="loading-timer" style="display:none">0s</span></span>' + (tip ? `<div class="loading-tip"><span style="margin-right:4px">💡 小提示：</span>${tip}</div>` : '');
   messagesEl.appendChild(el);
   scrollBottom();
   // Start timer update every 100ms
@@ -1882,8 +1898,17 @@ function renderSidebar() {
     for(const s of proj.sessions) {
       const item = document.createElement('div');
       item.className = 'session-item' + (s.id === sessionId ? ' active' : '');
-      item.innerHTML = `<div class="session-summary">${escHtml(s.summary || s.id.slice(0,12))}</div><div class="session-meta">${s.msgCount}条消息 · ${timeAgo(s.mtime)}</div>`;
-      item.addEventListener('click', () => switchSession(proj.name, s.id));
+      item.innerHTML = `<div class="session-summary">${escHtml(s.summary || s.id.slice(0,12))}</div><div class="session-meta">${s.msgCount}条消息 · ${timeAgo(s.mtime)}<button class="delete-session-btn" title="删除到回收站">🗑️</button></div>`;
+      item.addEventListener('click', (e) => {
+        if (!e.target.classList.contains('delete-session-btn')) {
+          switchSession(proj.name, s.id);
+        }
+      });
+      const deleteBtn = item.querySelector('.delete-session-btn');
+      deleteBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        deleteSession(proj.name, s.id);
+      });
       sessionsWrap.appendChild(item);
     }
     group.appendChild(sessionsWrap);
@@ -2068,6 +2093,17 @@ async function switchSession(projectName, sid) {
     scrollBottom();
     renderSidebar();
   } catch(e) { console.error('[switchSession]', e); appendSystemMsg('加载会话失败: ' + e.message, 'error'); }
+}
+
+async function deleteSession(projectName, sid) {
+  if (!confirm('确定要删除此会话吗？文件将移至回收站。')) return;
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(projectName)}/sessions/${encodeURIComponent(sid)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('删除失败');
+    appendSystemMsg('会话已删除到回收站', 'success');
+    if (sessionId === sid) { messagesEl.innerHTML = ''; sessionId = ''; sessionInfo.textContent = ''; }
+    await loadProjects();
+  } catch(e) { console.error('[deleteSession]', e); appendSystemMsg('删除失败: ' + e.message, 'error'); }
 }
 
 // ========== File Tree ==========

@@ -38,7 +38,7 @@
     "marked": "^17.0.4",
     "ws": "^8.18.0"
   },
-  "publishConfig":{
-	"registry":"https://registry.npmjs.org/"
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
   }
 }

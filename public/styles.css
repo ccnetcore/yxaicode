@@ -1663,13 +1663,15 @@ button:active::before {
 }
 
 /* Loading indicator */
-.loading-indicator { display:flex; align-items:center; gap:8px; padding:12px 16px; color:var(--text-secondary); font-size:13px; }
+.loading-indicator { display:flex; flex-direction:column; gap:8px; padding:12px 16px; color:var(--text-secondary); font-size:13px; }
+.loading-indicator > span { display:flex; align-items:center; gap:8px; }
 .loading-dots { display:inline-flex; gap:4px; }
 .loading-dots span { width:6px; height:6px; border-radius:50%; background:var(--accent-primary); animation:loadBounce .6s infinite alternate; }
 .loading-dots span:nth-child(2) { animation-delay:.2s; }
 .loading-dots span:nth-child(3) { animation-delay:.4s; }
 @keyframes loadBounce { 0%{opacity:.3;transform:translateY(0)} 100%{opacity:1;transform:translateY(-4px)} }
 .loading-timer { margin-left:8px; font-family:monospace; font-size:12px; color:var(--accent-primary); background:var(--bg-tertiary); padding:2px 6px; border-radius:var(--radius-sm); }
+.loading-tip { font-size:12px; color:var(--text-tertiary); padding:4px 8px; background:var(--bg-tertiary); border-radius:var(--radius-sm); border-left:2px solid var(--accent-primary); }
 ::-webkit-scrollbar { width:6px; }
 ::-webkit-scrollbar-track { background:var(--bg-primary); }
 ::-webkit-scrollbar-thumb { background:var(--border-primary); border-radius:3px; }
@@ -2169,6 +2171,27 @@ button:active::before {
   font-size: 11px;
   color: var(--text-tertiary);
   margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.delete-session-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 14px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.session-item:hover .delete-session-btn {
+  opacity: 0.6;
+}
+
+.delete-session-btn:hover {
+  opacity: 1 !important;
 }
 
 /* File Panel - File Browser */
