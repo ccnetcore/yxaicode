@@ -110,6 +110,7 @@ document.addEventListener('fullscreenchange', () => {
 });
 
 let ws=null, sessionId=null, isStreaming=false, streamingEl=null, streamBuf='', flushTimer=null;
+let activeBtwId=null, btwStreamBuf=''; // /btw 快速补充状态
 let expandedProjects = new Set(); // Fix 6: track expanded sidebar projects
 let expandedFolders = new Set(); // Track expanded file tree folders
 let selectedModel = null; // Current selected model object
@@ -255,6 +256,8 @@ const SLASH_COMMANDS = [
   { cmd: '/init', label: '/init', desc: '分析项目并生成 CLAUDE.md', icon: '📋', handler: () => { runInit(); hideDropdown(); } },
   { cmd: '/commit', label: '/commit', desc: 'Git 提交助手', icon: '📝', handler: () => { runCommit(); hideDropdown(); } },
   { cmd: '/girlfriend', label: '/girlfriend', desc: '切换女友模式开关显示', icon: '💕', handler: () => { toggleGirlfriendSwitch(); hideDropdown(); } },
+  { cmd: '/btw', label: '/btw <内容>', desc: '快速补充（不中断当前任务）', icon: '💬', handler: () => { appendSystemMsg('用法: /btw <补充内容>\n在任务执行中也可使用'); hideDropdown(); } },
+  { cmd: '/compact', label: '/compact', desc: '压缩会话上下文，释放 token 空间', icon: '📦', handler: () => { runCompact(); hideDropdown(); } },
 ];
 
 function showHelp() {
@@ -271,11 +274,100 @@ function showModelInfo() {
   appendSystemMsg('当前模型: ' + info);
 }
 
+// ========== /btw 快速补充 ==========
+function handleBtwCommand(question) {
+  const apiKey = localStorage.getItem('yxcode_apiKey')||'';
+  if(!apiKey) { appendSystemMsg('请先在设置中配置 API Key', 'error'); return; }
+  if(!selectedModel) { appendSystemMsg('请先选择模型', 'error'); return; }
+  // 自动关闭旧面板，开启新查询
+  if(activeBtwId) closeBtwPanel();
+
+  activeBtwId = 'btw-' + Date.now();
+  btwStreamBuf = '';
+  showBtwPanel(question);
+
+  const baseUrl = localStorage.getItem('yxcode_baseUrl') || '';
+  wsSend({ type:'btw-command', btwId:activeBtwId, prompt:question,
+    model:selectedModel.value, cwd:cwdInput.value||null, apiKey, baseUrl });
+}
+
+function showBtwPanel(question) {
+  const panel = document.getElementById('btwPanel');
+  document.getElementById('btwQuestion').textContent = question;
+  document.getElementById('btwContent').innerHTML = '';
+  document.getElementById('btwStatus').textContent = '思考中...';
+  panel.classList.remove('hidden');
+}
+
+function closeBtwPanel() {
+  document.getElementById('btwPanel').classList.add('hidden');
+  activeBtwId = null;
+  btwStreamBuf = '';
+}
+
+function handleBtwResponse(msg) {
+  if (msg.btwId !== activeBtwId) return;
+  const data = msg.data?.message || msg.data;
+  if (!data) return;
+  // 流式 delta
+  if (data.type === 'content_block_delta' && data.delta?.text) {
+    btwStreamBuf += data.delta.text;
+    document.getElementById('btwContent').innerHTML = marked.parse(btwStreamBuf);
+  }
+  // 完整 content 块
+  if (Array.isArray(data.content)) {
+    for (const p of data.content) {
+      if (p.type === 'text' && p.text?.trim()) {
+        btwStreamBuf += p.text;
+        document.getElementById('btwContent').innerHTML = marked.parse(btwStreamBuf);
+      }
+    }
+  }
+  // 滚动到底部
+  const el = document.getElementById('btwContent');
+  el.scrollTop = el.scrollHeight;
+}
+
+function handleBtwComplete(msg) {
+  if (msg.btwId !== activeBtwId) return;
+  document.getElementById('btwStatus').textContent = '完成';
+  // 代码高亮
+  document.querySelectorAll('#btwContent pre code').forEach(b => hljs.highlightElement(b));
+  // 将 btw 问答注入主聊天流，补充到主会话上下文
+  injectBtwToMainChat();
+}
+
+function handleBtwError(msg) {
+  if (msg.btwId !== activeBtwId) return;
+  document.getElementById('btwContent').innerHTML = '<span style="color:var(--red)">错误: ' + escHtml(msg.error) + '</span>';
+  document.getElementById('btwStatus').textContent = '出错';
+}
+
+// 将 btw 问答插入主聊天流，让主会话上下文能看到
+function injectBtwToMainChat() {
+  const question = document.getElementById('btwQuestion').textContent;
+  const answer = btwStreamBuf;
+  if (!question || !answer) return;
+
+  const d = document.createElement('div');
+  d.className = 'msg assistant btw-injected';
+  d.style.borderColor = 'var(--accent-primary)';
+  d.style.opacity = '0.85';
+  d.innerHTML = `<div class="role" style="color:var(--accent-primary)">💬 /btw 插队提问</div>`
+    + `<div class="content"><div style="color:var(--text-secondary);margin-bottom:8px;font-size:13px"><strong>问：</strong>${escHtml(question)}</div>`
+    + `<div>${marked.parse(answer)}</div></div>`;
+  messagesEl.appendChild(d);
+  scrollBottom();
+  // 代码高亮
+  d.querySelectorAll('pre code').forEach(b => hljs.highlightElement(b));
+}
+
 function toggleGirlfriendSwitch() {
   const switchWrapper = document.querySelector('.switch-wrapper');
   if (!switchWrapper) return;
   const isHidden = switchWrapper.style.display === 'none';
   switchWrapper.style.display = isHidden ? '' : 'none';
+  localStorage.setItem('yxcode_girlfriendSwitchHidden', isHidden ? 'false' : 'true');
   appendSystemMsg(isHidden ? '已显示女友模式开关' : '已隐藏女友模式开关');
 }
 
@@ -321,6 +413,23 @@ async function runCommit() {
   } catch(e) {
     appendSystemMsg('执行失败: ' + e.message, 'error');
   }
+}
+
+function runCompact() {
+  if (!sessionId) { appendSystemMsg('当前没有活跃会话，无需压缩', 'error'); return; }
+  const apiKey = localStorage.getItem('yxcode_apiKey') || '';
+  if (!apiKey) { appendSystemMsg('请先在设置中配置 API Key', 'error'); return; }
+  if (!selectedModel) { appendSystemMsg('请先选择模型', 'error'); return; }
+  if (!cwdInput.value.trim()) { appendSystemMsg('请先设置工作目录', 'error'); cwdInput.focus(); return; }
+  if (isStreaming) { appendSystemMsg('请等待当前任务完成', 'error'); return; }
+
+  appendUserMsg('/compact');
+  promptInput.value = '';
+  appendSystemMsg('正在压缩会话上下文…');
+  const baseUrl = localStorage.getItem('yxcode_baseUrl') || '';
+  wsSend({ type: 'claude-command', prompt: '/compact', sessionId, cwd: cwdInput.value || null,
+    model: selectedModel.value, permissionMode: permSelect.value, apiKey, baseUrl });
+  setStreaming(true);
 }
 
 function rewindLastMessage() {
@@ -714,6 +823,10 @@ const TOOL_ICON = {
   setApiKey.value = localStorage.getItem('yxcode_apiKey') || '';
   setBaseUrl.value = localStorage.getItem('yxcode_baseUrl') || '';
   girlfriendMode.checked = localStorage.getItem('yxcode_girlfriendMode') === 'true';
+  if (localStorage.getItem('yxcode_girlfriendSwitchHidden') === 'true') {
+    const switchWrapper = document.querySelector('.switch-wrapper');
+    if (switchWrapper) switchWrapper.style.display = 'none';
+  }
 
   // Load remembered permissions
   try {
@@ -892,15 +1005,20 @@ function wsSend(d) { if(ws&&ws.readyState===WebSocket.OPEN) ws.send(JSON.stringi
 // --- Message dispatch ---
 function handleMsg(msg) {
   switch(msg.type) {
-    case 'session-created': sessionId=msg.sessionId; sessionInfo.textContent='会话: '+sessionId.slice(0,8)+'...'; break;
+    case 'session-created': sessionId=msg.sessionId; sessionInfo.textContent='会话: '+sessionId.slice(0,8)+'...'; updatePageTitle(); break;
     case 'claude-response': handleClaudeResponse(msg.data); break;
-    case 'claude-complete': finishStreaming(); setStreaming(false); break;
+    case 'claude-complete': finishStreaming(); setStreaming(false); loadProjects().then(() => updatePageTitle(getSessionSummary(sessionId))); break;
     case 'claude-error': finishStreaming(); setStreaming(false); appendSystemMsg('错误: '+msg.error,'error'); break;
     case 'session-aborted': finishStreaming(); setStreaming(false); appendSystemMsg('会话已停止'); break;
     case 'permission-request': showPermission(msg); break;
     case 'permission-cancelled': permBanner.classList.add('hidden'); break;
     case 'plan-execution-request': showPlanExecutionConfirm(msg); break;
     case 'plan-mode-updated': planModeEnabled = msg.enabled; break;
+    // /btw 快速补充
+    case 'btw-response': handleBtwResponse(msg); break;
+    case 'btw-complete': handleBtwComplete(msg); break;
+    case 'btw-error': handleBtwError(msg); break;
+    case 'btw-injecting': appendSystemMsg(`💬 /btw 补充信息（${msg.count}条）已注入当前会话，AI 正在处理...`); break;
   }
 }
 
@@ -911,6 +1029,16 @@ function handleClaudeResponse(raw) {
   console.log('[msg]', data.type, data.subtype||'', data.role||'');
 
   if(data.type==='system' && data.subtype==='init') return;
+
+  // 压缩完成消息
+  if(data.type==='system' && data.subtype==='compact_boundary') {
+    finishStreaming();
+    const meta = data.compact_metadata || {};
+    const preTokens = meta.pre_tokens ? meta.pre_tokens.toLocaleString() : '未知';
+    const trigger = meta.trigger === 'manual' ? '手动触发' : (meta.trigger || '未知');
+    appendSystemMsg(`✅ 会话上下文已压缩\n压缩前 token 数: ${preTokens}\n触发方式: ${trigger}`);
+    return;
+  }
 
   // Streaming text
   if(data.type==='content_block_delta') {
@@ -1490,14 +1618,17 @@ function finishStreaming() {
   flushTypeQueue();
   if(flushTimer) { clearTimeout(flushTimer); flushTimer=null; }
   if(streamBuf) flushBuf();
-  if(streamingEl) { streamingEl.querySelector('.role')?.classList.remove('streaming-dot'); streamingEl=null; }
+  if(streamingEl) { streamingEl.querySelector('.role')?.classList.remove('streaming-dot'); streamingEl.querySelector('.msg-actions')?.classList.add('visible'); streamingEl.dataset.rawContent=streamBuf||''; streamingEl=null; }
   streamBuf='';
 }
 
 // ========== UI helpers ==========
 function createMsgEl(role) {
   const d=document.createElement('div'); d.className='msg '+role;
-  d.innerHTML=`<div class="role ${role==='assistant'?'streaming-dot':''}">${role==='user'?'你':'Claude'}</div><div class="content"></div>`;
+  const copyBtn = `<button class="msg-action-btn" data-action="copy" title="复制"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>`;
+  const retryBtn = `<button class="msg-action-btn" data-action="retry" title="重试"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>`;
+  const actions = `<div class="msg-actions">${copyBtn}${retryBtn}</div>`;
+  d.innerHTML=`<div class="role ${role==='assistant'?'streaming-dot':''}">${role==='user'?'你':'Claude'}</div><div class="content"></div>${actions}`;
   return d;
 }
 function appendUserMsg(t, images) {
@@ -1508,6 +1639,7 @@ function appendUserMsg(t, images) {
   } else {
     content.textContent = t;
   }
+  e.querySelector('.msg-actions')?.classList.add('visible');
   messagesEl.appendChild(e); scrollBottom();
 }
 function appendSystemMsg(t,type) {
@@ -1519,9 +1651,56 @@ function appendSystemMsg(t,type) {
 function scrollBottom() { const a=$('#chatArea'); requestAnimationFrame(()=>{a.scrollTop=a.scrollHeight;}); }
 function escHtml(s) { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
 
+// ========== 消息操作：复制 / 重试 ==========
+function retryFromMessage(msgEl) {
+  if (isStreaming) { appendSystemMsg('请等待当前任务完成', 'error'); return; }
+  const allEls = [...messagesEl.children];
+  let targetIdx = allEls.indexOf(msgEl);
+  if (targetIdx === -1) return;
+  // 如果点的是 AI 消息，往上找到对应的用户消息
+  if (msgEl.classList.contains('assistant')) {
+    for (let i = targetIdx - 1; i >= 0; i--) {
+      if (allEls[i].classList.contains('msg') && allEls[i].classList.contains('user')) {
+        targetIdx = i; break;
+      }
+    }
+  }
+  const userMsgEl = allEls[targetIdx];
+  if (!userMsgEl || !userMsgEl.classList.contains('user')) { appendSystemMsg('找不到对应的用户消息', 'error'); return; }
+  const content = userMsgEl.querySelector('.content')?.textContent || '';
+  for (let i = allEls.length - 1; i >= targetIdx; i--) allEls[i].remove();
+  // 清掉 sessionId，让服务端开新会话，不带之前的上下文
+  sessionId = null;
+  promptInput.value = content;
+  send();
+}
+messagesEl.addEventListener('click', function(e) {
+  const btn = e.target.closest('.msg-action-btn');
+  if (!btn) return;
+  const msgEl = btn.closest('.msg');
+  const action = btn.dataset.action;
+  if (action === 'copy') {
+    const content = msgEl.dataset.rawContent || msgEl.querySelector('.content')?.innerText || '';
+    navigator.clipboard.writeText(content).then(() => {
+      const svg = btn.innerHTML;
+      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+      setTimeout(() => { btn.innerHTML = svg; }, 1500);
+    });
+  }
+  if (action === 'retry') retryFromMessage(msgEl);
+});
+
 // ========== Send / Abort / New ==========
 async function send() {
-  const t=promptInput.value.trim(); if((!t && pendingImages.length===0)||isStreaming) return;
+  const t=promptInput.value.trim();
+
+  // /btw 快速补充 — 绕过 isStreaming 锁
+  if (t.startsWith('/btw ')) {
+    const question = t.slice(5).trim();
+    if (question) { promptInput.value=''; handleBtwCommand(question); return; }
+  }
+
+  if((!t && pendingImages.length===0)||isStreaming) return;
 
   // Intercept slash commands
   if (t.startsWith('/')) {
@@ -1564,7 +1743,26 @@ async function send() {
   setStreaming(true);
 }
 function abort() { if(sessionId) wsSend({type:'abort-session',sessionId}); }
-function newSession() { sessionId=null; messagesEl.innerHTML=''; sessionInfo.textContent=''; finishStreaming(); setStreaming(false); pendingImages=[]; renderImagePreviews(); renderSidebar(); }
+function newSession() { sessionId=null; messagesEl.innerHTML=''; sessionInfo.textContent=''; finishStreaming(); setStreaming(false); pendingImages=[]; renderImagePreviews(); renderSidebar(); updatePageTitle(); }
+
+// --- 页面标题跟随会话内容变化 ---
+const DEFAULT_PAGE_TITLE = document.title || '意心Code - yxcode';
+function updatePageTitle(summary) {
+  if (summary) {
+    document.title = summary + ' - 意心Code';
+  } else {
+    document.title = DEFAULT_PAGE_TITLE;
+  }
+}
+// 从 projectsData 中查找当前会话的 summary
+function getSessionSummary(sid) {
+  if (!sid || !projectsData) return '';
+  for (const proj of projectsData) {
+    const s = proj.sessions.find(s => s.id === sid);
+    if (s) return s.summary || '';
+  }
+  return '';
+}
 function setStreaming(v) {
   isStreaming=v; sendBtn.disabled=v; abortBtn.classList.toggle('hidden',!v); connStatus.className='status-dot '+(v?'busy':'online');
   if(v) showLoading(); else hideLoading();
@@ -1810,12 +2008,89 @@ cwdInput.addEventListener('change', () => {
   });
 })();
 
+// ========== Panel Resize (Sidebar & FilePanel) ==========
+(function initPanelResize() {
+  const sidebarHandle = document.getElementById('sidebarResizeHandle');
+  const filePanelHandle = document.getElementById('filePanelResizeHandle');
+  if (!sidebarHandle || !filePanelHandle) return;
+
+  const SIDEBAR_MIN = 180, SIDEBAR_MAX = 500;
+  const FILEPANEL_MIN = 200, FILEPANEL_MAX = 600;
+
+  function setupResize(handle, panel, storageKey, minW, maxW, direction) {
+    let startX, startW, dragging = false;
+
+    function onStart(clientX) {
+      dragging = true;
+      startX = clientX;
+      startW = panel.offsetWidth;
+      handle.classList.add('dragging');
+      document.body.classList.add('panel-resizing');
+      panel.style.transition = 'none';
+    }
+
+    function onMove(clientX) {
+      if (!dragging) return;
+      const delta = clientX - startX;
+      const newW = Math.min(Math.max(startW + delta * direction, minW), maxW);
+      panel.style.width = newW + 'px';
+    }
+
+    function onEnd() {
+      if (!dragging) return;
+      dragging = false;
+      handle.classList.remove('dragging');
+      document.body.classList.remove('panel-resizing');
+      panel.style.transition = '';
+      try { localStorage.setItem(storageKey, panel.style.width); } catch(e) {}
+    }
+
+    handle.addEventListener('mousedown', (e) => { e.preventDefault(); onStart(e.clientX); });
+    document.addEventListener('mousemove', (e) => onMove(e.clientX));
+    document.addEventListener('mouseup', onEnd);
+
+    handle.addEventListener('touchstart', (e) => { onStart(e.touches[0].clientX); }, { passive: true });
+    document.addEventListener('touchmove', (e) => { if (dragging) onMove(e.touches[0].clientX); }, { passive: true });
+    document.addEventListener('touchend', onEnd);
+
+    // 恢复上次保存的宽度
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (saved && !panel.classList.contains('collapsed')) panel.style.width = saved;
+    } catch(e) {}
+  }
+
+  // sidebar 向右拖变宽 → direction = 1
+  setupResize(sidebarHandle, sidebar, 'sidebarWidth', SIDEBAR_MIN, SIDEBAR_MAX, 1);
+  // filePanel 向左拖变宽 → direction = -1
+  setupResize(filePanelHandle, filePanel, 'filePanelWidth', FILEPANEL_MIN, FILEPANEL_MAX, -1);
+
+  // filePanel collapsed 时隐藏 handle（CSS 无法用 :has 兼容所有浏览器）
+  const fpObserver = new MutationObserver(() => {
+    filePanelHandle.style.display = filePanel.classList.contains('collapsed') ? 'none' : '';
+  });
+  fpObserver.observe(filePanel, { attributes: true, attributeFilter: ['class'] });
+  if (filePanel.classList.contains('collapsed')) filePanelHandle.style.display = 'none';
+})();
+
 // ========== Sidebar / File Panel Toggle ==========
-sidebarToggle.addEventListener('click', () => sidebar.classList.toggle('collapsed'));
+sidebarToggle.addEventListener('click', () => {
+  sidebar.classList.toggle('collapsed');
+  if (!sidebar.classList.contains('collapsed')) {
+    try { const w = localStorage.getItem('sidebarWidth'); if (w) sidebar.style.width = w; } catch(e) {}
+  }
+});
 sidebarCloseBtn.addEventListener('click', () => sidebar.classList.add('collapsed'));
 newSessionSideBtn.addEventListener('click', () => { newSession(); });
 locateSessionBtn.addEventListener('click', locateCurrentSession);
-filePanelToggle.addEventListener('click', () => { filePanel.classList.toggle('collapsed'); filePanelToggle.classList.toggle('collapsed'); if(!filePanel.classList.contains('collapsed')) loadFileTree(); });
+filePanelToggle.addEventListener('click', () => {
+  filePanel.classList.toggle('collapsed');
+  filePanelToggle.classList.toggle('collapsed');
+  if (!filePanel.classList.contains('collapsed')) {
+    try { const w = localStorage.getItem('filePanelWidth'); if (w) filePanel.style.width = w; } catch(e) {}
+    loadFileTree();
+  }
+});
 fileRefreshBtn.addEventListener('click', loadFileTree);
 fvCloseBtn.addEventListener('click', () => {
   fileViewer.classList.add('hidden');
@@ -2060,6 +2335,9 @@ async function switchSession(projectName, sid) {
     setStreaming(false);
     sessionId = sid;
     sessionInfo.textContent = '会话: ' + sid.slice(0,8) + '...';
+    // 更新页面标题为会话摘要
+    const summary = getSessionSummary(sid);
+    updatePageTitle(summary);
     // Auto-expand the project in sidebar (Fix 6)
     for (const proj of projectsData) {
       if (proj.sessions.some(s => s.id === sid)) { expandedProjects.add(proj.name); break; }
@@ -2074,6 +2352,8 @@ async function switchSession(projectName, sid) {
             el.querySelector('.content').innerHTML = marked.parse(part.text);
             el.querySelector('.content').querySelectorAll('pre code').forEach(c => { try { hljs.highlightElement(c); } catch(e) {} });
             el.querySelector('.role').classList.remove('streaming-dot');
+            el.querySelector('.msg-actions')?.classList.add('visible');
+            el.dataset.rawContent = part.text;
             messagesEl.appendChild(el);
           } else if(part.type === 'tool_use') {
             const card = createToolCard(part);
@@ -2087,6 +2367,8 @@ async function switchSession(projectName, sid) {
         el.querySelector('.content').innerHTML = marked.parse(m.content);
         el.querySelector('.content').querySelectorAll('pre code').forEach(c => { try { hljs.highlightElement(c); } catch(e) {} });
         el.querySelector('.role').classList.remove('streaming-dot');
+        el.querySelector('.msg-actions')?.classList.add('visible');
+        el.dataset.rawContent = m.content;
         messagesEl.appendChild(el);
       }
     }
@@ -2241,6 +2523,17 @@ cwdOpenBtn.addEventListener('click', () => {
 });
 fbCloseBtn.addEventListener('click', closeFolderBrowser);
 fbCancelBtn.addEventListener('click', closeFolderBrowser);
+
+// /btw 面板按钮事件
+document.getElementById('btwCloseBtn').addEventListener('click', closeBtwPanel);
+document.getElementById('btwCopyBtn').addEventListener('click', () => {
+  const text = btwStreamBuf || document.getElementById('btwContent').textContent;
+  if(text) navigator.clipboard.writeText(text).then(() => {
+    document.getElementById('btwStatus').textContent = '已复制';
+    setTimeout(() => { if(document.getElementById('btwStatus').textContent==='已复制') document.getElementById('btwStatus').textContent='完成'; }, 1500);
+  });
+});
+
   // 点击背景不再关闭弹窗，只能通过关闭按钮关闭
 fbSelectBtn.addEventListener('click', () => {
   if(fbCurrentPath) {
