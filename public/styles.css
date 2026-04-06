@@ -126,7 +126,8 @@
 [data-theme="light"] .diff-line.context code { color: var(--text-primary); }
 
 /* Light theme: inline code accent */
-[data-theme="light"] .msg .content :not(pre) > code {
+[data-theme="light"] .msg .content :not(pre) > code,
+[data-theme="light"] .group-text .content :not(pre) > code {
   color: var(--accent-primary);
 }
 
@@ -728,12 +729,14 @@ select:focus,
   background: rgba(249,115,22,0.08);
 }
 
-.msg .content p {
+.msg .content p,
+.group-text .content p {
   margin: 0.2em 0;
   line-height: 1.5;
 }
 
-.msg .content pre {
+.msg .content pre,
+.group-text .content pre {
   background: var(--bg-primary);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-md);
@@ -743,13 +746,15 @@ select:focus,
   box-shadow: var(--shadow-sm);
 }
 
-.msg .content code {
+.msg .content code,
+.group-text .content code {
   font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1.6;
 }
 
-.msg .content :not(pre) > code {
+.msg .content :not(pre) > code,
+.group-text .content :not(pre) > code {
   background: var(--bg-tertiary);
   color: var(--accent-light);
   padding: 2px 8px;
@@ -759,16 +764,20 @@ select:focus,
 }
 
 .msg .content ul,
-.msg .content ol {
+.msg .content ol,
+.group-text .content ul,
+.group-text .content ol {
   padding-left: 1.8em;
   margin: 0.6em 0;
 }
 
-.msg .content li {
+.msg .content li,
+.group-text .content li {
   margin: 0.4em 0;
 }
 
-.msg .content table {
+.msg .content table,
+.group-text .content table {
   border-collapse: collapse;
   margin: var(--space-md) 0;
   width: 100%;
@@ -778,25 +787,107 @@ select:focus,
 }
 
 .msg .content th,
-.msg .content td {
+.msg .content td,
+.group-text .content th,
+.group-text .content td {
   border: 1px solid var(--border-primary);
   padding: var(--space-sm) var(--space-md);
   text-align: left;
 }
 
-.msg .content th {
+.msg .content th,
+.group-text .content th {
   background: var(--bg-tertiary);
   font-weight: 600;
   color: var(--text-primary);
 }
 
-.msg .content blockquote {
+.msg .content blockquote,
+.group-text .content blockquote {
   border-left: 3px solid var(--accent-primary);
   padding-left: var(--space-lg);
   color: var(--text-secondary);
   margin: var(--space-md) 0;
   font-style: italic;
 }
+
+/* ===== Message Group - 合并 AI 回复分组 ===== */
+.msg-group {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  width: 100%;
+  box-shadow: var(--shadow-md);
+  animation: messageSlideIn var(--transition-slow);
+  position: relative;
+  overflow: hidden;
+}
+
+.group-header {
+  padding: var(--space-md) var(--space-xl) 0;
+}
+
+.group-header .role {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  margin-bottom: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.group-body {
+  padding: var(--space-sm) var(--space-xl) var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+/* 分组内文本块 - 轻量无边框 */
+.group-text .content {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  white-space: normal;
+}
+
+/* 分组内工具卡片 - 紧凑化 */
+.msg-group .tool-card {
+  margin: var(--space-xs) 0;
+  box-shadow: none;
+  border-radius: var(--radius-md);
+}
+
+.msg-group .tool-card:hover {
+  box-shadow: var(--shadow-sm);
+}
+
+.msg-group .tool-header {
+  padding: var(--space-sm) var(--space-md);
+  font-size: 12px;
+}
+
+/* 分组内 ask-panel 紧凑化 */
+.msg-group .ask-panel {
+  margin: var(--space-sm) 0;
+}
+
+/* 分组 actions 按钮 */
+.msg-group > .msg-actions {
+  display: none;
+  position: absolute;
+  bottom: 6px;
+  right: 10px;
+  gap: 2px;
+  z-index: 2;
+}
+.msg-group:hover > .msg-actions.visible { display: flex; }
+
+/* 分组内 loading 指示器 */
+.msg-group .loading-indicator {
+  padding: 8px 0;
+}
+
 /* Tool Cards - Premium Category Design */
 .tool-card {
   background: var(--bg-secondary);

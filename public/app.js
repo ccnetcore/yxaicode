@@ -110,6 +110,7 @@ document.addEventListener('fullscreenchange', () => {
 });
 
 let ws=null, sessionId=null, isStreaming=false, streamingEl=null, streamBuf='', flushTimer=null;
+let currentGroup=null; // 当前活跃的 .msg-group 容器
 let activeBtwId=null, btwStreamBuf=''; // /btw 快速补充状态
 let expandedProjects = new Set(); // Fix 6: track expanded sidebar projects
 let expandedFolders = new Set(); // Track expanded file tree folders
@@ -248,7 +249,7 @@ let dropdownItems = [];
 let dropdownIndex = -1;
 
 const SLASH_COMMANDS = [
-  { cmd: '/clear', label: '/clear', desc: '清空聊天记录', icon: '🗑️', handler: () => { messagesEl.innerHTML=''; hideDropdown(); } },
+  { cmd: '/clear', label: '/clear', desc: '清空聊天记录', icon: '🗑️', handler: () => { messagesEl.innerHTML=''; currentGroup=null; hideDropdown(); } },
   { cmd: '/new', label: '/new', desc: '新建会话', icon: '✨', handler: () => { newSession(); hideDropdown(); } },
   { cmd: '/rewind', label: '/rewind', desc: '撤销最后一条消息', icon: '⏪', handler: () => { rewindLastMessage(); hideDropdown(); } },
   { cmd: '/help', label: '/help', desc: '显示所有命令', icon: '❓', handler: () => { showHelp(); hideDropdown(); } },
@@ -465,6 +466,7 @@ function rewindLastMessage() {
     elementsToRemove.push(allElements[i]);
   }
   elementsToRemove.forEach(el => el.remove());
+  currentGroup = null; // 清理可能被移除的分组引用
 
   // Restore content to input
   promptInput.value = content;
@@ -1007,9 +1009,9 @@ function handleMsg(msg) {
   switch(msg.type) {
     case 'session-created': sessionId=msg.sessionId; sessionInfo.textContent='会话: '+sessionId.slice(0,8)+'...'; updatePageTitle(); break;
     case 'claude-response': handleClaudeResponse(msg.data); break;
-    case 'claude-complete': finishStreaming(); setStreaming(false); loadProjects().then(() => updatePageTitle(getSessionSummary(sessionId))); break;
-    case 'claude-error': finishStreaming(); setStreaming(false); appendSystemMsg('错误: '+msg.error,'error'); break;
-    case 'session-aborted': finishStreaming(); setStreaming(false); appendSystemMsg('会话已停止'); break;
+    case 'claude-complete': finishStreaming(); closeGroup(); setStreaming(false); loadProjects().then(() => updatePageTitle(getSessionSummary(sessionId))); break;
+    case 'claude-error': finishStreaming(); closeGroup(); setStreaming(false); appendSystemMsg('错误: '+msg.error,'error'); break;
+    case 'session-aborted': finishStreaming(); closeGroup(); setStreaming(false); appendSystemMsg('会话已停止'); break;
     case 'permission-request': showPermission(msg); break;
     case 'permission-cancelled': permBanner.classList.add('hidden'); break;
     case 'plan-execution-request': showPlanExecutionConfirm(msg); break;
@@ -1033,6 +1035,7 @@ function handleClaudeResponse(raw) {
   // 压缩完成消息
   if(data.type==='system' && data.subtype==='compact_boundary') {
     finishStreaming();
+    closeGroup();
     const meta = data.compact_metadata || {};
     const preTokens = meta.pre_tokens ? meta.pre_tokens.toLocaleString() : '未知';
     const trigger = meta.trigger === 'manual' ? '手动触发' : (meta.trigger || '未知');
@@ -1075,6 +1078,7 @@ function handleClaudeResponse(raw) {
   // Result
   if(data.type==='result') {
     finishStreaming();
+    closeGroup();
     if(data.subtype==='error_max_turns') appendSystemMsg('已达到最大轮次');
   }
 }
@@ -1178,7 +1182,7 @@ function renderAskUserQuestion(part) {
   }
 
   renderStep();
-  messagesEl.appendChild(panel);
+  getGroupBody().appendChild(panel);
   scrollBottom();
 }
 
@@ -1201,7 +1205,7 @@ function renderTodoTool(part) {
     body.appendChild(list);
   }
   card.classList.add('open');
-  messagesEl.appendChild(card);
+  getGroupBody().appendChild(card);
   scrollBottom();
 }
 
@@ -1219,7 +1223,7 @@ function parseTodoItems(input) {
 function renderTaskTool(part) {
   const card = createToolCard(part);
   card.classList.add('open');
-  messagesEl.appendChild(card);
+  getGroupBody().appendChild(card);
   scrollBottom();
 }
 
@@ -1290,7 +1294,8 @@ function createToolCard(part) {
 
 function appendToolCard(part) {
   const card = createToolCard(part);
-  messagesEl.appendChild(card);
+  const body = getGroupBody();
+  body.appendChild(card);
   scrollBottom();
 }
 
@@ -1603,11 +1608,41 @@ function flushTypeQueue() {
 }
 
 function scheduleFlush() { if(flushTimer) return; flushTimer=setTimeout(()=>{ flushTimer=null; flushBuf(); },30); }
+
+// ========== 消息分组：将一次 AI 回复的所有输出合并到一个容器 ==========
+function ensureGroup() {
+  if(currentGroup) return currentGroup;
+  hideLoading();
+  const g = document.createElement('div');
+  g.className = 'msg-group';
+  const copyBtn = `<button class="msg-action-btn" data-action="copy" title="复制"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>`;
+  const retryBtn = `<button class="msg-action-btn" data-action="retry" title="重试"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>`;
+  g.innerHTML = `<div class="group-header"><div class="role streaming-dot">Claude</div></div><div class="group-body"></div><div class="msg-actions">${copyBtn}${retryBtn}</div>`;
+  messagesEl.appendChild(g);
+  currentGroup = g;
+  return g;
+}
+function getGroupBody() { return ensureGroup().querySelector('.group-body'); }
+function closeGroup() {
+  if(!currentGroup) return;
+  currentGroup.querySelector('.group-header .role')?.classList.remove('streaming-dot');
+  currentGroup.querySelector('.msg-actions')?.classList.add('visible');
+  // 聚合所有文本内容供复制按钮使用
+  const allText = [...currentGroup.querySelectorAll('.group-text')]
+    .map(el => el.dataset.rawContent || el.querySelector('.content')?.innerText || '')
+    .join('\n\n');
+  currentGroup.dataset.rawContent = allText;
+  currentGroup = null;
+}
+
 function ensureAssistantEl() {
   if(!streamingEl) {
     hideLoading();
-    streamingEl=createMsgEl('assistant');
-    messagesEl.appendChild(streamingEl);
+    const body = getGroupBody();
+    streamingEl = document.createElement('div');
+    streamingEl.className = 'group-text';
+    streamingEl.innerHTML = '<div class="content"></div>';
+    body.appendChild(streamingEl);
   }
 }
 function flushBuf() {
@@ -1622,8 +1657,9 @@ function finishStreaming() {
   flushTypeQueue();
   if(flushTimer) { clearTimeout(flushTimer); flushTimer=null; }
   if(streamBuf) flushBuf();
-  if(streamingEl) { streamingEl.querySelector('.role')?.classList.remove('streaming-dot'); streamingEl.querySelector('.msg-actions')?.classList.add('visible'); streamingEl.dataset.rawContent=streamBuf||''; streamingEl=null; }
+  if(streamingEl) { streamingEl.dataset.rawContent=streamBuf||''; streamingEl=null; }
   streamBuf='';
+  // 注意：不关闭 currentGroup，由 closeGroup() 在 turn 结束时处理
 }
 
 // ========== UI helpers ==========
@@ -1659,10 +1695,13 @@ function escHtml(s) { const d=document.createElement('div'); d.textContent=s||''
 function retryFromMessage(msgEl) {
   if (isStreaming) { appendSystemMsg('请等待当前任务完成', 'error'); return; }
   const allEls = [...messagesEl.children];
-  let targetIdx = allEls.indexOf(msgEl);
+  // 如果点击的元素在分组内，定位到分组
+  let clickedTop = msgEl;
+  if (msgEl.closest('.msg-group')) clickedTop = msgEl.closest('.msg-group');
+  let targetIdx = allEls.indexOf(clickedTop);
   if (targetIdx === -1) return;
-  // 如果点的是 AI 消息，往上找到对应的用户消息
-  if (msgEl.classList.contains('assistant')) {
+  // 如果点的是 AI 分组，往上找到对应的用户消息
+  if (clickedTop.classList.contains('msg-group') || clickedTop.classList.contains('assistant')) {
     for (let i = targetIdx - 1; i >= 0; i--) {
       if (allEls[i].classList.contains('msg') && allEls[i].classList.contains('user')) {
         targetIdx = i; break;
@@ -1681,7 +1720,8 @@ function retryFromMessage(msgEl) {
 messagesEl.addEventListener('click', function(e) {
   const btn = e.target.closest('.msg-action-btn');
   if (!btn) return;
-  const msgEl = btn.closest('.msg');
+  const msgEl = btn.closest('.msg-group') || btn.closest('.msg');
+  if (!msgEl) return;
   const action = btn.dataset.action;
   if (action === 'copy') {
     const content = msgEl.dataset.rawContent || msgEl.querySelector('.content')?.innerText || '';
@@ -1747,7 +1787,7 @@ async function send() {
   setStreaming(true);
 }
 function abort() { if(sessionId) wsSend({type:'abort-session',sessionId}); }
-function newSession() { sessionId=null; messagesEl.innerHTML=''; sessionInfo.textContent=''; finishStreaming(); setStreaming(false); pendingImages=[]; renderImagePreviews(); renderSidebar(); updatePageTitle(); }
+function newSession() { sessionId=null; messagesEl.innerHTML=''; sessionInfo.textContent=''; finishStreaming(); closeGroup(); setStreaming(false); pendingImages=[]; renderImagePreviews(); renderSidebar(); updatePageTitle(); }
 
 // --- 页面标题跟随会话内容变化 ---
 const DEFAULT_PAGE_TITLE = document.title || '意心Code - yxcode';
@@ -1812,7 +1852,12 @@ function showLoading() {
   el.id = 'loadingIndicator';
   const tip = tips.length ? tips[Math.floor(Math.random()*tips.length)] : '';
   el.innerHTML = '<div class="loading-dots"><span></span><span></span><span></span></div><span class="loading-text">Claude 正在思考...<span class="loading-timer" style="display:none">0s</span></span>' + (tip ? `<div class="loading-tip"><span style="margin-right:4px">💡 小提示：</span>${tip}</div>` : '');
-  messagesEl.appendChild(el);
+  // 优先放入当前分组，否则放入消息容器
+  if(currentGroup) {
+    currentGroup.querySelector('.group-body').appendChild(el);
+  } else {
+    messagesEl.appendChild(el);
+  }
   scrollBottom();
   // Start timer update every 100ms
   loadingTimerInterval = setInterval(updateLoadingTimer, 100);
@@ -2336,6 +2381,7 @@ async function switchSession(projectName, sid) {
     // Clear and replay
     messagesEl.innerHTML = '';
     finishStreaming();
+    closeGroup();
     setStreaming(false);
     sessionId = sid;
     sessionInfo.textContent = '会话: ' + sid.slice(0,8) + '...';
@@ -2347,35 +2393,45 @@ async function switchSession(projectName, sid) {
       if (proj.sessions.some(s => s.id === sid)) { expandedProjects.add(proj.name); break; }
     }
     for(const m of msgs) {
-      if(m.role === 'user') { appendUserMsg(m.content); continue; }
-      // Assistant message: render parts if available
+      if(m.role === 'user') {
+        closeGroup(); // 遇到用户消息先关闭上一个分组
+        appendUserMsg(m.content);
+        continue;
+      }
+      // Assistant message: 使用分组容器
+      ensureGroup();
       if(m.parts && m.parts.length) {
         for(const part of m.parts) {
-          if(part.type === 'text') {
-            const el = createMsgEl('assistant');
-            el.querySelector('.content').innerHTML = marked.parse(part.text);
-            el.querySelector('.content').querySelectorAll('pre code').forEach(c => { try { hljs.highlightElement(c); } catch(e) {} });
-            el.querySelector('.role').classList.remove('streaming-dot');
-            el.querySelector('.msg-actions')?.classList.add('visible');
-            el.dataset.rawContent = part.text;
-            messagesEl.appendChild(el);
+          if(part.type === 'text' && part.text?.trim()) {
+            const textEl = document.createElement('div');
+            textEl.className = 'group-text';
+            const content = document.createElement('div');
+            content.className = 'content';
+            content.innerHTML = marked.parse(part.text);
+            content.querySelectorAll('pre code').forEach(c => { try { hljs.highlightElement(c); } catch(e) {} });
+            textEl.dataset.rawContent = part.text;
+            textEl.appendChild(content);
+            getGroupBody().appendChild(textEl);
           } else if(part.type === 'tool_use') {
             const card = createToolCard(part);
-            messagesEl.appendChild(card);
+            getGroupBody().appendChild(card);
           } else if(part.type === 'tool_result') {
             appendToolResult(part);
           }
         }
       } else if(m.content) {
-        const el = createMsgEl('assistant');
-        el.querySelector('.content').innerHTML = marked.parse(m.content);
-        el.querySelector('.content').querySelectorAll('pre code').forEach(c => { try { hljs.highlightElement(c); } catch(e) {} });
-        el.querySelector('.role').classList.remove('streaming-dot');
-        el.querySelector('.msg-actions')?.classList.add('visible');
-        el.dataset.rawContent = m.content;
-        messagesEl.appendChild(el);
+        const textEl = document.createElement('div');
+        textEl.className = 'group-text';
+        const content = document.createElement('div');
+        content.className = 'content';
+        content.innerHTML = marked.parse(m.content);
+        content.querySelectorAll('pre code').forEach(c => { try { hljs.highlightElement(c); } catch(e) {} });
+        textEl.dataset.rawContent = m.content;
+        textEl.appendChild(content);
+        getGroupBody().appendChild(textEl);
       }
     }
+    closeGroup(); // 关闭末尾分组
     scrollBottom();
     renderSidebar();
   } catch(e) { console.error('[switchSession]', e); appendSystemMsg('加载会话失败: ' + e.message, 'error'); }
