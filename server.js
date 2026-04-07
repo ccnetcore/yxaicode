@@ -369,7 +369,7 @@ async function loadMcpConfig(cwd) {
 }
 
 // --- Sync settings to ~/.claude/settings.json ---
-async function syncSettingsFile(apiKey, baseUrl, model) {
+async function syncSettingsFile(apiKey, baseUrl, model, effortLevel) {
   const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
   try {
     let settings = {};
@@ -391,6 +391,8 @@ async function syncSettingsFile(apiKey, baseUrl, model) {
       settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
       settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
     }
+    if (effortLevel) settings.env.CLAUDE_CODE_EFFORT_LEVEL = effortLevel;
+    else delete settings.env.CLAUDE_CODE_EFFORT_LEVEL;
 
     await fs.mkdir(path.dirname(settingsPath), { recursive: true });
     await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
@@ -535,9 +537,9 @@ app.post('/api/test-connection', async (req, res) => {
 
 // API: sync settings to ~/.claude/settings.json
 app.post('/api/settings', async (req, res) => {
-  const { apiKey, baseUrl, model } = req.body;
+  const { apiKey, baseUrl, model, effortLevel } = req.body;
   try {
-    await syncSettingsFile(apiKey, baseUrl, model);
+    await syncSettingsFile(apiKey, baseUrl, model, effortLevel);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
@@ -873,7 +875,7 @@ wss.on('connection', (ws) => {
           break;
         }
         // 每次查询前同步设置到 ~/.claude/settings.json
-        await syncSettingsFile(msg.apiKey, msg.baseUrl, msg.model);
+        await syncSettingsFile(msg.apiKey, msg.baseUrl, msg.model, msg.effortLevel);
         runQuery(msg.prompt, {
           sessionId: msg.sessionId || null,
           cwd: msg.cwd || null,

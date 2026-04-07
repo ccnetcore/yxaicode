@@ -1763,6 +1763,22 @@ button:active::before {
   color: var(--text-tertiary);
 }
 
+.effort-btn {
+  background: none;
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 8px;
+  transition: border-color 0.15s, color 0.15s;
+}
+.effort-btn:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
+.effort-btn[data-level="none"] { color: var(--text-tertiary); opacity: 0.6; }
+.effort-btn[data-level="low"] { color: var(--text-tertiary); }
+.effort-btn[data-level="medium"] { color: var(--accent-primary); }
+.effort-btn[data-level="high"] { color: #f97316; font-weight: 600; }
+
 .streaming-dot::after {
   content: '●';
   animation: blink 1.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;

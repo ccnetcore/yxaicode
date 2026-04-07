@@ -40,7 +40,8 @@ const modelSelectDisplay=$('#modelSelectDisplay'), modelSelectDropdown=$('#model
   folderBrowser=$('#folderBrowser'), fbPath=$('#fbPath'), fbBody=$('#fbBody'),
   fbSelectBtn=$('#fbSelectBtn'), fbCancelBtn=$('#fbCancelBtn'), fbCloseBtn=$('#fbCloseBtn'),
   sidebarSearch=$('#sidebarSearch'),
-  cmdDropdown=$('#cmdDropdown');
+  cmdDropdown=$('#cmdDropdown'),
+  effortBtn=$('#effortBtn'), effortLabel=$('#effortLabel');
 
 // 加载提示文本
 let tips = [];
@@ -81,6 +82,30 @@ themeToggleBtn.addEventListener('click', () => {
     themeIconMoon.style.display = '';
   }
 })();
+
+// --- Effort Level ---
+const EFFORT_LEVELS = [null, 'low', 'medium', 'high'];
+let effortLevel = localStorage.getItem('yxcode_effortLevel') || null;
+function applyEffortLevel(level) {
+  effortLevel = level;
+  effortLabel.textContent = level || '无';
+  effortBtn.dataset.level = level || 'none';
+  if (level) localStorage.setItem('yxcode_effortLevel', level);
+  else localStorage.removeItem('yxcode_effortLevel');
+}
+applyEffortLevel(effortLevel);
+effortBtn.addEventListener('click', () => {
+  const next = EFFORT_LEVELS[(EFFORT_LEVELS.indexOf(effortLevel) + 1) % EFFORT_LEVELS.length];
+  applyEffortLevel(next);
+  const syncPayload = { effortLevel: next };
+  const apiKey = localStorage.getItem('yxcode_apiKey') || '';
+  const baseUrl = localStorage.getItem('yxcode_baseUrl') || '';
+  if (apiKey) syncPayload.apiKey = apiKey;
+  syncPayload.baseUrl = baseUrl || 'https://yxai.chat';
+  if (selectedModel) syncPayload.model = selectedModel.value;
+  fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(syncPayload) })
+    .catch(err => console.warn('[effort sync]', err));
+});
 
 // --- Fullscreen Toggle ---
 const fullscreenBtn = document.getElementById('fullscreenBtn');
@@ -1782,7 +1807,7 @@ async function send() {
   const baseUrl = localStorage.getItem('yxcode_baseUrl') || '';
   wsSend({ type:'claude-command', prompt:finalPrompt, images, sessionId, cwd:cwdInput.value||null,
     model:selectedModel.value, permissionMode:permSelect.value,
-    apiKey, baseUrl });
+    apiKey, baseUrl, effortLevel });
   pendingImages = []; renderImagePreviews();
   setStreaming(true);
 }
