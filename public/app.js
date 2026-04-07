@@ -2222,11 +2222,15 @@ function renderSidebar() {
     for(const s of proj.sessions) {
       const item = document.createElement('div');
       item.className = 'session-item' + (s.id === sessionId ? ' active' : '');
-      item.innerHTML = `<div class="session-summary">${escHtml(s.summary || s.id.slice(0,12))}</div><div class="session-meta">${s.msgCount}条消息 · ${timeAgo(s.mtime)}<button class="delete-session-btn" title="删除到回收站">🗑️</button></div>`;
+      item.innerHTML = `<div class="session-summary">${escHtml(s.summary || s.id.slice(0,12))}</div><div class="session-meta">${s.msgCount}条消息 · ${timeAgo(s.mtime)}<button class="export-session-btn" title="导出为Markdown">📤</button><button class="delete-session-btn" title="删除到回收站">🗑️</button></div>`;
       item.addEventListener('click', (e) => {
-        if (!e.target.classList.contains('delete-session-btn')) {
+        if (!e.target.classList.contains('delete-session-btn') && !e.target.classList.contains('export-session-btn')) {
           switchSession(proj.name, s.id);
         }
+      });
+      item.querySelector('.export-session-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        exportSession(proj.name, s.id, s.summary || s.id.slice(0,12));
       });
       const deleteBtn = item.querySelector('.delete-session-btn');
       deleteBtn.addEventListener('click', (e) => {
@@ -2446,6 +2450,24 @@ async function deleteSession(projectName, sid) {
     if (sessionId === sid) { messagesEl.innerHTML = ''; sessionId = ''; sessionInfo.textContent = ''; }
     await loadProjects();
   } catch(e) { console.error('[deleteSession]', e); appendSystemMsg('删除失败: ' + e.message, 'error'); }
+}
+
+async function exportSession(projectName, sid, title) {
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(projectName)}/sessions/${encodeURIComponent(sid)}/messages`);
+    const msgs = await res.json();
+    let md = `# ${title}\n\n`;
+    for (const m of msgs) {
+      const role = m.role === 'user' ? '**用户**' : '**助手**';
+      const content = typeof m.content === 'string' ? m.content : (m.parts || []).filter(p => p.type === 'text').map(p => p.text).join('\n');
+      if (content.trim()) md += `${role}\n\n${content.trim()}\n\n---\n\n`;
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([md], { type: 'text/markdown' }));
+    const ts = new Date().toISOString().slice(0,16).replace('T','_').replace(':','-');
+    a.download = `${title.slice(0,10).replace(/[/\\?%*:|"<>]/g, '-')}_${ts}.md`;
+    a.click();
+  } catch(e) { appendSystemMsg('导出失败: ' + e.message, 'error'); }
 }
 
 // ========== File Tree ==========

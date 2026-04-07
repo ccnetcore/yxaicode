@@ -2319,6 +2319,24 @@ body.panel-resizing {
   align-items: center;
 }
 
+.export-session-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 14px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.session-item:hover .export-session-btn {
+  opacity: 0.6;
+}
+
+.export-session-btn:hover {
+  opacity: 1 !important;
+}
+
 .delete-session-btn {
   background: none;
   border: none;
