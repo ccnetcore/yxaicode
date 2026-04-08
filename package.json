@@ -1,6 +1,6 @@
 {
   "name": "@yxai/code",
-  "version": "1.2.0",
+  "version": "1.4.0",
   "description": "意心Code - 无门槛的ClaudeCode可视化轻量工具",
   "type": "module",
   "main": "server.js",
@@ -27,13 +27,13 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ccnetcore/yxaicode.git"
+    "url": "https://github.com/AIDotNet/yxaicode"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.59",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.87",
     "express": "^4.21.0",
     "highlight.js": "^11.11.1",
     "marked": "^17.0.4",

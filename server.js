@@ -66,6 +66,7 @@ const API_BASE_URL = 'https://yxai.chat';
 const activeSessions = new Map();
 const pendingApprovals = new Map();
 const planModeStates = new Map(); // sessionId -> { enabled: boolean, pendingPlan: boolean }
+const pendingBtwMessages = new Map(); // ws -> [{ question, answer }]  /btw 待注入队列
 
 // --- Helpers ---
 function uid() {
@@ -256,6 +257,38 @@ async function runQuery(prompt, options, ws) {
         }
       }
     }
+
+    // 主查询完成后，检查是否有 /btw 补充信息需要注入到会话
+    while (sessionId && pendingBtwMessages.has(ws) && pendingBtwMessages.get(ws).length > 0) {
+      const injections = pendingBtwMessages.get(ws).splice(0);
+      const injectPrompt = injections.map(b =>
+        `[用户通过 /btw 补充的信息]\n${b.question}`
+      ).join('\n\n') + '\n\n以上是用户在你执行任务期间通过 /btw 命令补充的信息，请将这些信息纳入考虑继续完成当前任务。';
+
+      console.log(`[btw-inject] 注入 ${injections.length} 条补充信息到会话 ${sessionId}`);
+      wsSend(ws, { type: 'btw-injecting', sessionId, count: injections.length });
+
+      const resumeOpts = { ...sdkOpts, resume: sessionId };
+      const qi2 = sdkQuery({ prompt: injectPrompt, options: resumeOpts });
+      activeSessions.set(sessionId, qi2);
+
+      for await (const msg of qi2) {
+        wsSend(ws, { type: 'claude-response', data: msg, sessionId });
+        if (msg.type === 'result' && msg.modelUsage) {
+          const mk = Object.keys(msg.modelUsage)[0];
+          const md = msg.modelUsage[mk];
+          if (md) {
+            const used = (md.cumulativeInputTokens || md.inputTokens || 0)
+              + (md.cumulativeOutputTokens || md.outputTokens || 0)
+              + (md.cumulativeCacheReadInputTokens || md.cacheReadInputTokens || 0)
+              + (md.cumulativeCacheCreationInputTokens || md.cacheCreationInputTokens || 0);
+            wsSend(ws, { type: 'token-usage', used, sessionId });
+          }
+        }
+      }
+      // 循环继续检查，防止注入期间又有新的 btw
+    }
+
     wsSend(ws, { type: 'claude-complete', sessionId });
   } catch (err) {
     console.error('SDK error:', err.message);
@@ -263,6 +296,55 @@ async function runQuery(prompt, options, ws) {
   } finally {
     if (sessionId) activeSessions.delete(sessionId);
     // Restore env vars
+    if (prevBaseUrl !== undefined) process.env.ANTHROPIC_BASE_URL = prevBaseUrl;
+    else delete process.env.ANTHROPIC_BASE_URL;
+    if (prevApiKey !== undefined) process.env.ANTHROPIC_API_KEY = prevApiKey;
+    else delete process.env.ANTHROPIC_API_KEY;
+  }
+}
+
+// --- BTW 快速补充（轻量查询，不中断主会话） ---
+async function runBtwQuery(prompt, options, ws) {
+  const btwId = options.btwId;
+  const effectiveBaseUrl = (options.baseUrl && options.baseUrl.trim()) || API_BASE_URL;
+
+  const prevBaseUrl = process.env.ANTHROPIC_BASE_URL;
+  const prevApiKey = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_BASE_URL = effectiveBaseUrl;
+  if (options.apiKey) process.env.ANTHROPIC_API_KEY = options.apiKey;
+
+  const sdkOpts = {
+    model: options.model || 'sonnet',
+    cwd: options.cwd || process.cwd(),
+    permissionMode: 'bypassPermissions',
+    maxTurns: 1,
+    system: { type: 'preset', preset: 'claude_code' },
+  };
+
+  console.log(`[btw] 快速补充: "${prompt.slice(0, 60)}..." | 模型: ${sdkOpts.model}`);
+
+  try {
+    const qi = sdkQuery({ prompt, options: sdkOpts });
+    let btwAnswer = '';
+    for await (const msg of qi) {
+      wsSend(ws, { type: 'btw-response', btwId, data: msg });
+      // 收集回答文本
+      const data = msg.message || msg;
+      if (data.type === 'content_block_delta' && data.delta?.text) btwAnswer += data.delta.text;
+      if (Array.isArray(data.content)) {
+        for (const p of data.content) { if (p.type === 'text' && p.text) btwAnswer += p.text; }
+      }
+    }
+    // 将用户补充信息存入待注入队列，主查询完成后自动注入
+    if (!pendingBtwMessages.has(ws)) pendingBtwMessages.set(ws, []);
+    pendingBtwMessages.get(ws).push({ question: prompt, answer: btwAnswer });
+    console.log(`[btw] 已入队待注入: "${prompt.slice(0, 40)}..."`);
+
+    wsSend(ws, { type: 'btw-complete', btwId });
+  } catch (err) {
+    console.error('[btw error]', err.message);
+    wsSend(ws, { type: 'btw-error', btwId, error: err.message });
+  } finally {
     if (prevBaseUrl !== undefined) process.env.ANTHROPIC_BASE_URL = prevBaseUrl;
     else delete process.env.ANTHROPIC_BASE_URL;
     if (prevApiKey !== undefined) process.env.ANTHROPIC_API_KEY = prevApiKey;
@@ -287,7 +369,7 @@ async function loadMcpConfig(cwd) {
 }
 
 // --- Sync settings to ~/.claude/settings.json ---
-async function syncSettingsFile(apiKey, baseUrl, model) {
+async function syncSettingsFile(apiKey, baseUrl, model, effortLevel) {
   const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
   try {
     let settings = {};
@@ -309,6 +391,8 @@ async function syncSettingsFile(apiKey, baseUrl, model) {
       settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
       settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
     }
+    if (effortLevel) settings.env.CLAUDE_CODE_EFFORT_LEVEL = effortLevel;
+    else delete settings.env.CLAUDE_CODE_EFFORT_LEVEL;
 
     await fs.mkdir(path.dirname(settingsPath), { recursive: true });
     await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
@@ -453,9 +537,9 @@ app.post('/api/test-connection', async (req, res) => {
 
 // API: sync settings to ~/.claude/settings.json
 app.post('/api/settings', async (req, res) => {
-  const { apiKey, baseUrl, model } = req.body;
+  const { apiKey, baseUrl, model, effortLevel } = req.body;
   try {
-    await syncSettingsFile(apiKey, baseUrl, model);
+    await syncSettingsFile(apiKey, baseUrl, model, effortLevel);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
@@ -791,7 +875,7 @@ wss.on('connection', (ws) => {
           break;
         }
         // 每次查询前同步设置到 ~/.claude/settings.json
-        await syncSettingsFile(msg.apiKey, msg.baseUrl, msg.model);
+        await syncSettingsFile(msg.apiKey, msg.baseUrl, msg.model, msg.effortLevel);
         runQuery(msg.prompt, {
           sessionId: msg.sessionId || null,
           cwd: msg.cwd || null,
@@ -801,6 +885,18 @@ wss.on('connection', (ws) => {
           baseUrl: msg.baseUrl || null,
           images: msg.images || null,
         }, ws).catch((e) => console.error('[query error]', e.message));
+        break;
+      }
+
+      case 'btw-command': {
+        console.log(`[WS] btw-command 收到: "${msg.prompt?.slice(0, 50)}..."`);
+        runBtwQuery(msg.prompt, {
+          btwId: msg.btwId,
+          model: msg.model || 'sonnet',
+          cwd: msg.cwd || null,
+          apiKey: msg.apiKey || null,
+          baseUrl: msg.baseUrl || null,
+        }, ws).catch(e => console.error('[btw error]', e.message));
         break;
       }
 

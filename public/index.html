@@ -42,6 +42,7 @@
     </div>
     <div class="sidebar-body" id="sidebarBody"></div>
   </aside>
+  <div id="sidebarResizeHandle" class="panel-resize-handle"></div>
 
   <!-- Main Area -->
   <div id="mainArea">
@@ -159,9 +160,10 @@
         <button id="newBtn" class="btn-secondary">新会话</button>
       </div>
     </div>
-    <div class="input-footer"><span id="sessionInfo"></span></div>
+    <div class="input-footer"><span id="sessionInfo"></span><button id="effortBtn" class="effort-btn" title="思考等级（点击切换）">↻ 思考: <span id="effortLabel">medium</span></button></div>
   </footer>
   </div><!-- end #mainArea -->
+  <div id="filePanelResizeHandle" class="panel-resize-handle"></div>
 
   <!-- File Panel -->
   <aside id="filePanel">
@@ -203,6 +205,23 @@
     <div class="file-viewer-content"><pre id="fvContent"></pre></div>
   </div>
 </div>
+
+<!-- BTW 快速补充浮动面板 -->
+<div id="btwPanel" class="btw-overlay hidden">
+  <div class="btw-panel">
+    <div class="btw-header">
+      <span class="btw-title">💬 /btw 快速补充</span>
+      <button id="btwCloseBtn" class="btn-icon" title="关闭">✕</button>
+    </div>
+    <div class="btw-question"><span class="btw-q-label">你问：</span><span id="btwQuestion"></span></div>
+    <div class="btw-content" id="btwContent"></div>
+    <div class="btw-footer">
+      <span id="btwStatus" class="btw-status">思考中...</span>
+      <button id="btwCopyBtn" class="btn-icon" title="复制回答">📋</button>
+    </div>
+  </div>
+</div>
+
 <script src="/app.js"></script>
 </body>
 </html>
